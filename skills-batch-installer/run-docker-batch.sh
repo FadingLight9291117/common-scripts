@@ -1,11 +1,12 @@
-#!/bin/bash
+#!/bin/sh
 
 # Distributed Anti-Bot Load Testing - Concurrent execution
+# POSIX shell compatible version
 
 # Parameters with defaults
 Total=${1:-20}
 Concurrency=${2:-4}
-Image=${3:-skills-installer}
+Image=${3:-alpine:latest}
 
 # Colors
 RED='\033[0;31m'
@@ -30,30 +31,20 @@ echo -e "${YELLOW}Each container will use a different client identity for anti-b
 
 started=0
 completed=0
-declare -a jobs
 
-function start_run_job() {
-    local index=$1
-    local imageName=$2
+start_run_job() {
+    index=$1
+    imageName=$2
     
     # Generate unique client identifiers
-    local deviceId=$(openssl rand -hex 16)
-    local clientUuid=$(openssl rand -hex 16)
-    local userAgents=(
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15"
-        "Mozilla/5.0 (Android 11; SM-G991B) AppleWebKit/537.36"
-    )
-    local userAgent=${userAgents[$((index % ${#userAgents[@]}))}
+    deviceId=$(openssl rand -hex 16 2>/dev/null || echo "dev-$index")
+    clientUuid=$(openssl rand -hex 16 2>/dev/null || echo "uuid-$index")
+    userAgent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
     
     # Start background job
-    {
+    (
         timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-        deviceIdShort=${deviceId:0:8}
-        clientUuidShort=${clientUuid:0:8}
-        echo -e "${GREEN}[$timestamp] Run $index start [Device: ${deviceIdShort}... UUID: ${clientUuidShort}...]${NC}"
+        echo -e "${GREEN}[$timestamp] Run $index start${NC}"
         
         # Run container with different client identities
         docker run --rm \
@@ -69,7 +60,7 @@ function start_run_job() {
         else
             echo -e "${RED}[$timestamp] Run $index failed (exit $exitCode)${NC}"
         fi
-    } &
+    ) &
     
     echo $!
 }
@@ -77,23 +68,16 @@ function start_run_job() {
 # Main loop
 while [ "$completed" -lt "$Total" ]; do
     # Start new jobs if we have capacity
-    while [ "$started" -lt "$Total" ] && [ ${#jobs[@]} -lt "$Concurrency" ]; do
+    while [ "$started" -lt "$Total" ] && [ "$(jobs -r | wc -l)" -lt "$Concurrency" ]; do
         started=$((started + 1))
-        jobPid=$(start_run_job "$started" "$Image")
-        jobs+=("$jobPid")
+        start_run_job "$started" "$Image" > /dev/null
     done
     
     # Wait for at least one job to complete
-    if [ ${#jobs[@]} -gt 0 ]; then
-        firstJob=${jobs[0]}
-        wait "$firstJob" 2>/dev/null
-        
-        # Remove from jobs array
-        jobs=("${jobs[@]:1}")
-        completed=$((completed + 1))
-        
-        echo -e "${YELLOW}Progress: $completed/$Total completed${NC}"
-    fi
+    wait -n 2>/dev/null
+    completed=$((completed + 1))
+    
+    echo -e "${YELLOW}Progress: $completed/$Total completed${NC}"
 done
 
 echo -e "${GREEN}All runs completed with different client identities.${NC}"

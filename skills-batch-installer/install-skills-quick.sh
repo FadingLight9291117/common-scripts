@@ -1,10 +1,11 @@
-#!/bin/bash
+#!/bin/sh
 
 # Bash script: Install skills with configurable interval in random temp directory
+# POSIX shell compatible version
 
 # Configuration
 skillRepo="https://github.com/fadinglight9291117/arkts_skills"
-skills=("harmonyos-build-deploy" "arkts-development")
+skills="harmonyos-build-deploy arkts-development"
 intervalSeconds=10  # 0 means execute immediately, otherwise wait (in seconds)
 maxRuns=1
 
@@ -19,7 +20,7 @@ echo -e "${CYAN}================================================================
 echo -e "${GREEN}Skills Auto Installation Script (Temp Directory)${NC}"
 echo -e "${CYAN}================================================================${NC}"
 echo -e "${YELLOW}Repository: $skillRepo${NC}"
-echo -e "${YELLOW}Skills: ${skills[*]}${NC}"
+echo -e "${YELLOW}Skills: $skills${NC}"
 if [ "$intervalSeconds" -eq 0 ]; then
     echo -e "${YELLOW}Interval: Immediate (no wait)${NC}"
 else
@@ -55,7 +56,7 @@ while true; do
         mkdir -p "$tempDir"
         
         # Change to temp directory
-        pushd "$tempDir" > /dev/null
+        cd "$tempDir" || exit 1
         echo -e "${GREEN}    OK Switched to temp directory${NC}"
         
         # Install first skill
@@ -78,7 +79,7 @@ while true; do
         
         # Remove skills
         echo -e "${CYAN}  -> Removing skills${NC}"
-        for skill in "${skills[@]}"; do
+        for skill in $skills; do
             npx skills remove "$skill" --yes &> /dev/null
             if [ $? -eq 0 ] || [ $? -eq 1 ]; then
                 echo -e "${GREEN}    OK $skill removed${NC}"
@@ -87,8 +88,8 @@ while true; do
             fi
         done
         
-        # Return to original directory
-        popd > /dev/null
+        # Return to previous directory
+        cd - > /dev/null || exit 1
         echo -e "${CYAN}  -> Returned to original directory${NC}"
         
         # Delete temp directory
@@ -105,7 +106,7 @@ while true; do
         
     } || {
         echo -e "${RED}    ERROR: Script encountered an error${NC}"
-        popd > /dev/null 2>&1
+        cd - > /dev/null 2>&1
     }
     
     # Wait for interval before next run (except on last run)

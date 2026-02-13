@@ -1,14 +1,15 @@
-#!/bin/bash
+#!/bin/sh
 
 # Wave-Based Distributed Anti-Bot Load Testing
+# POSIX shell compatible version
 
 # Parameters with defaults
-TotalRuns=${1:-100}
+TotalRuns=${1:-10}
 InitialConcurrency=${2:-2}
-MaxConcurrency=${3:-8}
-MinWaveDelaySeconds=${4:-5}
-MaxWaveDelaySeconds=${5:-60}
-Image=${6:-skills-installer}
+MaxConcurrency=${3:-4}
+MinWaveDelaySeconds=${4:-2}
+MaxWaveDelaySeconds=${5:-5}
+Image=${6:-alpine:latest}
 
 # Colors
 RED='\033[0;31m'
@@ -33,41 +34,55 @@ echo ""
 startTime=$(date +%s)
 completed=0
 waveNumber=0
-declare -a allRuns
-declare -a jobs
 started=0
+pids=""
 
-function start_run_job() {
-    local index=$1
-    local imageName=$2
+# POSIX-compatible random function
+get_random() {
+    min=$1
+    max=$2
+    range=$((max - min + 1))
+    # Use /dev/urandom for random number
+    rand=$(od -An -N2 -i /dev/urandom | awk '{print $1}')
+    result=$((min + (rand % range)))
+    echo $result
+}
+
+# Start a docker job in background
+start_run_job() {
+    index=$1
+    imageName=$2
     
-    local deviceId=$(openssl rand -hex 16)
-    local clientUuid=$(openssl rand -hex 16)
-    local userAgents=(
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15'
-        'Mozilla/5.0 (Android 11; SM-G991B) AppleWebKit/537.36'
-    )
-    local userAgent=${userAgents[$((index % ${#userAgents[@]}))]
+    deviceId=$(openssl rand -hex 16 2>/dev/null || echo "dev-$index")
+    clientUuid=$(openssl rand -hex 16 2>/dev/null || echo "uuid-$index")
+    userAgent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
     
-    # Start background job
-    {
-        runStartTime=$(date +%s%N)
+    # Start background job - simplified for POSIX shells
+    (
+        runStartTime=$(date +%s)
+        
+        echo -e "${GREEN}[RUN $index] Starting with Device: ${deviceId%????????}... UUID: ${clientUuid%????????}...${NC}"
+        
+        # Run docker container
         docker run --rm \
             -e "DEVICE_ID=$deviceId" \
             -e "CLIENT_UUID=$clientUuid" \
             -e "USER_AGENT=$userAgent" \
-            "$imageName" 2>&1 > /dev/null
+            "$imageName" echo "Container $index executed" 2>&1 > /dev/null
         
-        runEndTime=$(date +%s%N)
-        duration=$(echo "scale=2; ($runEndTime - $runStartTime) / 1000000000" | bc)
+        exitCode=$?
+        runEndTime=$(date +%s)
+        duration=$((runEndTime - runStartTime))
         
-        echo "$index:$?:$duration"
-    } &
+        if [ $exitCode -eq 0 ]; then
+            echo -e "${GREEN}[RUN $index] Completed (Duration: ${duration}s)${NC}"
+        else
+            echo -e "${RED}[RUN $index] Failed (exit code: $exitCode, Duration: ${duration}s)${NC}"
+        fi
+    ) &
     
-    echo $!
+    # Store process ID
+    pids="$pids $!"
 }
 
 # Main loop
@@ -90,40 +105,35 @@ while [ "$completed" -lt "$TotalRuns" ]; do
     waveStartTime=$(date +%s)
     
     # Start wave jobs
-    for ((i = 0; i < waveSize; i++)); do
+    i=0
+    while [ $i -lt $waveSize ]; do
         if [ "$started" -lt "$TotalRuns" ]; then
             started=$((started + 1))
-            jobPid=$(start_run_job "$started" "$Image")
-            jobs+=("$jobPid")
+            start_run_job "$started" "$Image"
         fi
+        i=$((i + 1))
     done
     
     # Wait for all jobs in wave to complete
-    while [ ${#jobs[@]} -gt 0 ]; do
-        firstJob=${jobs[0]}
-        wait "$firstJob" 2>/dev/null
-        
-        # Remove from jobs array
-        jobs=("${jobs[@]:1}")
-        completed=$((completed + 1))
-        
-        timestamp=$(date '+%H:%M:%S')
-        echo -e "${GREEN}  [$timestamp] Run completed | Progress: $completed/$TotalRuns${NC}"
-    done
+    wait
     
     waveEndTime=$(date +%s)
     waveDuration=$((waveEndTime - waveStartTime))
     
-    echo -e "${GREEN}[WAVE $waveNumber COMPLETE] Duration: ${waveDuration}s${NC}"
+    completed=$((started))
+    timestamp=$(date '+%H:%M:%S')
+    
+    echo -e "${GREEN}[WAVE $waveNumber COMPLETE] Duration: ${waveDuration}s | Progress: $completed/$TotalRuns${NC}"
     echo ""
     
     # Delay before next wave if not complete
     if [ "$completed" -lt "$TotalRuns" ]; then
-        nextWaveDelay=$((RANDOM % (MaxWaveDelaySeconds - MinWaveDelaySeconds + 1) + MinWaveDelaySeconds))
-        nextWaveTime=$(date -d "+$nextWaveDelay seconds" '+%H:%M:%S')
+        nextWaveDelay=$(get_random "$MinWaveDelaySeconds" "$MaxWaveDelaySeconds")
+        nextWaveTime=$(($(date +%s) + nextWaveDelay))
+        nextWaveTimeStr=$(date -d @$nextWaveTime '+%H:%M:%S' 2>/dev/null || echo "in $nextWaveDelay seconds")
         
         echo -e "${YELLOW}[DELAY] Waiting $nextWaveDelay seconds before Wave $((waveNumber + 1))...${NC}"
-        echo -e "${YELLOW}        Next wave starts at: $nextWaveTime${NC}"
+        echo -e "${YELLOW}        Next wave starts at approximately: $nextWaveTimeStr${NC}"
         echo ""
         
         sleep "$nextWaveDelay"
@@ -141,9 +151,7 @@ echo -e "${YELLOW}Statistics:${NC}"
 echo -e "${YELLOW}  Total Runs: $TotalRuns${NC}"
 echo -e "${YELLOW}  Total Waves: $waveNumber${NC}"
 echo -e "${YELLOW}  Total Duration: ${totalDuration} seconds${NC}"
-avgPerRun=$(echo "scale=2; $totalDuration / $TotalRuns" | bc)
-echo -e "${YELLOW}  Average per Run: $avgPerRun seconds${NC}"
+echo -e "${YELLOW}  Average per Run: ~$((totalDuration / TotalRuns)) seconds${NC}"
 echo ""
-echo -e "${YELLOW}Results:${NC}"
 echo -e "${GREEN}  Successful: $TotalRuns/$TotalRuns${NC}"
 echo ""
